@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Janitorial Ops Dashboard</title>
+  <!-- Tailwind for quick styling -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    #map { height: 480px; }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-900">
+  <div class="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
+    <header class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+      <div>
+        <h1 class="text-2xl sm:text-3xl font-bold">Janitorial Ops Dashboard</h1>
+        <p class="text-sm text-gray-600">Map + color-coded week view (by person)</p>
+        <p id="geo-status" class="text-xs text-gray-500"></p>
+      </div>
+      <div id="test-panel"></div>
+    </header>
+
+    <div class="grid grid-cols-1 lg:grid-cols-5 gap-6 mt-6">
+      <div class="lg:col-span-3 bg-white rounded-2xl shadow p-3">
+        <div class="flex items-center justify-between px-2 py-2">
+          <h2 class="font-semibold">Map</h2>
+          <span class="text-xs text-gray-500">Pins are grouped by address</span>
+        </div>
+        <div id="map" class="rounded-xl overflow-hidden"></div>
+      </div>
+
+      <div class="lg:col-span-2 bg-white rounded-2xl shadow p-4">
+        <h2 class="font-semibold mb-3">Week View (split overnights across days)</h2>
+
+        <div class="flex flex-wrap gap-2 mb-3" id="member-chips"></div>
+        <div class="flex flex-wrap gap-2 mb-4" id="site-chips"></div>
+
+        <div class="space-y-4" id="week-list"></div>
+
+        <div class="mt-4 text-xs text-gray-500">
+          Tip: Overnight shifts are split across days (late-night part / next-morning part).
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-6 text-xs text-gray-500">
+      Coordinates are preloaded for some addresses and auto-geocoded for others using OpenStreetMap Nominatim.
+    </div>
+  </div>
+
+<script>
+// ---------------------- DATA ----------------------
+const RAW_LOCATIONS = [
+  { id: "sourcepoint", name: "Sourcepoint", address: "2330 Commerce Park Drive NE, Palm Bay, FL 32905", lat: 28.04992, lng: -80.6011 },
+  { id: "oaks", name: "The Oaks Theatre", address: "1800 W Hibiscus Blvd, Melbourne, FL 32901", lat: 28.08667, lng: -80.6522 },
+  { id: "innovation", name: "Innovation Center", address: "2475 Palm Bay Rd NE, Palm Bay, FL 32905", lat: 28.035571, lng: -80.602071 },
+  { id: "centerwell", name: "CenterWell", address: "2475 Palm Bay Rd NE, Palm Bay, FL 32905", lat: 28.035571, lng: -80.602071 },
+  { id: "tangerine", name: "Tangerine", address: "1620 Tangerine St, Melbourne, FL 32901", lat: 28.082111, lng: -80.605889 },
+  { id: "washburn", name: "Washburn", address: "618 Washburn Rd, Melbourne, FL 32934" },
+  { id: "fbc", name: "Florida Business Center", address: "1320 S Babcock St, Melbourne, FL 32901" },
+  { id: "teamselect", name: "Team Select", address: "3972 W Eau Gallie Blvd, Melbourne, FL 32934", lat: 28.122111, lng: -80.693444 },
+];
+
+const SHIFTS = [
+  { member: "Robert Emrich", siteId: "teamselect", rule: "Every Friday", time: "1:00 PM" },
+  { member: "Robert Emrich", siteId: "oaks", rule: "Mon, Tue, Wed", time: "10:30 PM" },
+  { member: "Robert Emrich", siteId: "innovation", rule: "Mon–Fri", time: "3:00 PM – 6:00 PM" },
+  { member: "Robert Emrich", siteId: "centerwell", rule: "Every Friday", time: "5:00 PM" },
+  { member: "Rachel Pinkham", siteId: "oaks", rule: "Mon, Tue, Wed", time: "10:30 PM" },
+  { member: "Rachel Pinkham", siteId: "tangerine", rule: "1st & 3rd Thu", time: "1:00 PM" },
+  { member: "Rachel Pinkham", siteId: "washburn", rule: "1st & 3rd Thu", time: "3:00 PM" },
+  { member: "Jaydon Doyle", siteId: "oaks", rule: "Thu", time: "10:30 PM – 2:00 AM" },
+  { member: "Jaydon Doyle", siteId: "oaks", rule: "Fri–Sun", time: "12:00 AM – 3:00 AM" },
+  { member: "Alex Blackburn", siteId: "oaks", rule: "Thu", time: "10:30 PM – 2:00 AM" },
+  { member: "Alex Blackburn", siteId: "oaks", rule: "Fri–Sun", time: "12:00 AM – 3:00 AM" },
+  { member: "Gloria Moreno", siteId: "sourcepoint", rule: "Mon–Fri", time: "8:00 AM – 5:00 PM" },
+  { member: "Julia Thomas", siteId: "sourcepoint", rule: "Mon–Fri", time: "5:00 PM – 9:00 PM" },
+  { member: "Julia Thomas", siteId: "fbc", rule: "Mon, Wed, Fri", time: "3:00 PM – 5:00 PM" },
+  { member: "Seth McCollum", siteId: "sourcepoint", rule: "Sun", time: "1:00 PM – 3:00 PM" },
+  { member: "Seth McCollum", siteId: "innovation", rule: "Tue & Fri", time: "4:30 PM – 6:00 PM" },
+];
+
+// ---------------------- HELPERS ----------------------
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function chip(label, active, onclick) {
+  const b = document.createElement('button');
+  b.className = "px-3 py-1 rounded-full text-sm border " + (active ? "bg-black text-white border-black" : "bg-white text-black border-gray-300 hover:border-black");
+  b.textContent = label;
+  b.onclick = onclick;
+  return b;
+}
+
+function colorForPerson(name) {
+  let hash = 0;
+  for (let i=0;i<name.length;i++) hash = (hash*31 + name.charCodeAt(i)) >>> 0;
+  const hue = hash % 360;
+  return `hsl(${hue},70%,45%)`;
+}
+
+function groupLocationsForMap(locs) {
+  const groups = {};
+  locs.forEach(l => {
+    const key = (l.address || l.name).trim().toLowerCase();
+    if (!groups[key]) groups[key] = { key, lat: l.lat, lng: l.lng, names: [l.name], ids: [l.id], address: l.address };
+    else {
+      groups[key].names.push(l.name);
+      groups[key].ids.push(l.id);
+      if (typeof groups[key].lat !== "number" && typeof l.lat === "number") groups[key].lat = l.lat;
+      if (typeof groups[key].lng !== "number" && typeof l.lng === "number") groups[key].lng = l.lng;
+    }
+  });
+  return Object.values(groups);
+}
+
+function daysFromRule(rule) {
+  const rangeMatch = rule.match(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[–-](Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/);
+  if (rangeMatch) {
+    const start = DOW.indexOf(rangeMatch[1]);
+    const end = DOW.indexOf(rangeMatch[2]);
+    const res = [];
+    for (let i=start;i<=end;i++) res.push(i);
+    return res;
+  }
+  if (/Every\s+Friday/i.test(rule)) return [DOW.indexOf("Fri")];
+  if (/Sun(?![a-z])/i.test(rule) && rule.trim() === "Sun") return [0];
+  if (/^Thu$/i.test(rule)) return [4];
+  if (/Tue\s*&\s*Fri/i.test(rule)) return [2,5];
+  if (/Mon,\s*Tue,\s*Wed/i.test(rule)) return [1,2,3];
+  if (/Mon,\s*Wed,\s*Fri/i.test(rule)) return [1,3,5];
+  if (/Mon[–-]Fri/i.test(rule)) return [1,2,3,4,5];
+  if (/1st\s*&\s*3rd\s*Thu/i.test(rule)) return [4];
+  return [];
+}
+
+function parseTimeRange(s) {
+  const parts = s.split(/–|-/).map(t => t.trim());
+  const a = parts[0] || "";
+  const b = parts[1] || "";
+  function toMinutes(t) {
+    const m = t.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
+    if (!m) return null;
+    let h = parseInt(m[1], 10);
+    const min = m[2] ? parseInt(m[2], 10) : 0;
+    const mer = m[3].toUpperCase();
+    if (h === 12) h = 0;
+    if (mer === "PM") h += 12;
+    return h*60 + min;
+  }
+  const start = toMinutes(a);
+  const end = toMinutes(b);
+  if (start == null || end == null) return { start: null, end: null, crossesMidnight: false };
+  return { start, end, crossesMidnight: end < start };
+}
+
+function buildWeekView(shifts) {
+  const out = [];
+  shifts.forEach(s => {
+    const days = daysFromRule(s.rule);
+    const tr = parseTimeRange(s.time);
+    if (tr.crossesMidnight && tr.start!=null && tr.end!=null) {
+      days.forEach(d => {
+        out.push({ day: d, member: s.member, siteId: s.siteId, start: tr.start, end: 24*60 });
+        const next = (d+1)%7;
+        out.push({ day: next, member: s.member, siteId: s.siteId, start: 0, end: tr.end });
+      });
+    } else {
+      days.forEach(d => out.push({ day: d, member: s.member, siteId: s.siteId, start: tr.start, end: tr.end }));
+    }
+  });
+  return out;
+}
+
+function formatMinutes(min) {
+  if (min==null) return "";
+  const h24 = Math.floor(min/60);
+  const m = min % 60;
+  const mer = h24 >= 12 ? "PM" : "AM";
+  let h = h24 % 12; if (h===0) h=12;
+  return `${h}:${String(m).padStart(2,"0")} ${mer}`;
+}
+
+// ---------------------- MAP ----------------------
+const center = [28.08, -80.63];
+const map = L.map('map').setView(center, 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+const DefaultIcon = new L.Icon({
+  iconUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png",
+  iconRetinaUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png",
+  shadowUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png",
+  iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
+});
+
+let geocoding = 0;
+async function geocodeIfNeeded(loc) {
+  if (typeof loc.lat === "number" && typeof loc.lng === "number") return loc;
+  geocoding++;
+  document.getElementById('geo-status').textContent = "Geocoding remaining addresses…";
+  try {
+    const url = new URL("https://nominatim.openstreetmap.org/search");
+    url.searchParams.set("format","json");
+    url.searchParams.set("q", loc.address);
+    url.searchParams.set("limit","1");
+    const res = await fetch(url.toString(), { headers: { Accept: "application/json", "User-Agent": "Janitorial-Dashboard/1.0 (Contact: you@example.com)" }});
+    const data = await res.json();
+    if (Array.isArray(data) && data.length>0) {
+      const { lat, lon } = data[0];
+      loc.lat = parseFloat(lat); loc.lng = parseFloat(lon);
+    }
+  } catch(e) {}
+  geocoding--;
+  if (geocoding<=0) document.getElementById('geo-status').textContent = "";
+  return loc;
+}
+
+(async () => {
+  // Ensure we have coords
+  const updated = await Promise.all(RAW_LOCATIONS.map(geocodeIfNeeded));
+  const groups = groupLocationsForMap(updated);
+
+  groups.forEach(g => {
+    if (typeof g.lat === "number" && typeof g.lng === "number") {
+      const marker = L.marker([g.lat, g.lng], { icon: DefaultIcon }).addTo(map);
+      const shiftsHere = SHIFTS.filter(s => g.ids.includes(s.siteId));
+      const lines = shiftsHere.map(s => `<li><span style="color:${colorForPerson(s.member)}">${s.member}</span> — ${s.rule} — ${s.time}</li>`).join("");
+      marker.bindPopup(`
+        <div class="space-y-1">
+          <div class="font-semibold">${g.names.join(" + ")}</div>
+          <div class="text-xs text-gray-600">${g.address}</div>
+          <div class="pt-2">
+            <div class="text-xs font-medium">Shifts here</div>
+            <ul class="text-xs list-disc pl-4">${lines || '<li class="italic text-gray-500">No shifts assigned yet</li>'}</ul>
+          </div>
+        </div>`
+      );
+    }
+  });
+})();
+
+// ---------------------- FILTERS + WEEK VIEW ----------------------
+let memberFilter = "All";
+let siteFilter = "All";
+
+const sitesById = Object.fromEntries(RAW_LOCATIONS.map(l => [l.id, l]));
+const members = ["All", ...Array.from(new Set(SHIFTS.map(s => s.member)))];
+const siteOptions = ["All", ...RAW_LOCATIONS.map(l => l.name)];
+
+function renderChips() {
+  const mc = document.getElementById('member-chips');
+  mc.innerHTML = "";
+  members.forEach(m => mc.appendChild(chip(m === "All" ? "All members" : m, memberFilter === m, () => { memberFilter = m; renderWeek(); renderChips(); })));
+
+  const sc = document.getElementById('site-chips');
+  sc.innerHTML = "";
+  siteOptions.forEach(s => sc.appendChild(chip(s === "All" ? "All sites" : s, siteFilter === s, () => { siteFilter = s; renderWeek(); renderChips(); })));
+}
+
+function renderWeek() {
+  const filtered = SHIFTS.filter(s =>
+    (memberFilter === "All" || s.member === memberFilter) &&
+    (siteFilter === "All" || sitesById[s.siteId]?.name === siteFilter)
+  );
+  const items = buildWeekView(filtered);
+  const wrap = document.getElementById('week-list');
+  wrap.innerHTML = "";
+  DOW.forEach((d, di) => {
+    const dayItems = items.filter(it => it.day === di);
+    const section = document.createElement('div');
+    section.innerHTML = `<div class="text-xs uppercase tracking-wide text-gray-500 mb-1">${d}</div>`;
+    const space = document.createElement('div');
+    space.className = "space-y-2";
+    if (dayItems.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = "text-xs text-gray-400";
+      empty.textContent = "— No assignments —";
+      space.appendChild(empty);
+    } else {
+      dayItems.forEach((it) => {
+        const row = document.createElement('div');
+        row.className = "flex items-center justify-between rounded-lg border p-2";
+        row.innerHTML = `
+          <div class="flex items-center gap-2">
+            <span class="inline-block w-2.5 h-2.5 rounded-full" style="background:${colorForPerson(it.member)}" title="${it.member}"></span>
+            <span class="text-sm font-medium" style="color:${colorForPerson(it.member)}">${it.member}</span>
+            <span class="text-xs text-gray-500">@ ${sitesById[it.siteId]?.name || it.siteId}</span>
+          </div>
+          <div class="text-xs text-gray-700">${formatMinutes(it.start)}${(it.start!=null||it.end!=null)?" – ":""}${formatMinutes(it.end)}</div>
+        `;
+        space.appendChild(row);
+      });
+    }
+    section.appendChild(space);
+    wrap.appendChild(section);
+  });
+}
+
+function runTests() {
+  const failures = [];
+  const siteIds = new Set(RAW_LOCATIONS.map(l => l.id));
+  SHIFTS.forEach((s, idx) => { if (!siteIds.has(s.siteId)) failures.push(`Shift ${idx} has unknown siteId: ${s.siteId}`); });
+  SHIFTS.forEach((s, idx) => { if (!s.member || !s.time || !s.rule) failures.push(`Shift ${idx} is missing member, rule, or time`); });
+  RAW_LOCATIONS.forEach((l, idx) => { if (!l.address || !l.name || !l.id) failures.push(`Location ${idx} missing id/name/address`); });
+  const counts = RAW_LOCATIONS.reduce((a,l)=> (a[l.id]=(a[l.id]||0)+1, a), {});
+  Object.entries(counts).forEach(([id,c]) => { if (c>1) failures.push(`Duplicate location id detected: ${id}`); });
+  SHIFTS.forEach((s, idx) => { if (!/AM|PM/i.test(s.time)) failures.push(`Shift ${idx} time missing AM/PM hint: ${s.time}`); });
+  const groups = groupLocationsForMap(RAW_LOCATIONS);
+  const g2475 = groups.find(g => (g.address||'').includes('2475 Palm Bay Rd'));
+  if (!g2475 || g2475.ids.length < 2) failures.push("Address grouping failed to combine locations at 2475 Palm Bay Rd NE");
+  return failures;
+}
+
+function renderTests() {
+  const tp = document.getElementById('test-panel');
+  const failures = runTests();
+  if (failures.length === 0) {
+    tp.innerHTML = '<div class="rounded-lg border border-green-300 bg-green-50 text-green-800 p-2 text-xs">✅ All tests passed</div>';
+  } else {
+    tp.innerHTML = '<div class="rounded-lg border border-red-300 bg-red-50 text-red-800 p-2 text-xs">❌ Tests failed:<ul class="list-disc pl-4">'+failures.map(f=>`<li>${f}</li>`).join('')+'</ul></div>';
+  }
+}
+
+// Initial render
+renderChips();
+renderWeek();
+renderTests();
+</script>
+</body>
+</html>
